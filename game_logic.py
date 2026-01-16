@@ -55,6 +55,7 @@ def resolve_turn(
     p_cmd = Command.NONE if player.skip_next else planned_p
     c_cmd = Command.NONE if cpu.skip_next else planned_c
 
+    # Clear skip flags once applied
     player.skip_next = False
     cpu.skip_next = False
 
@@ -75,6 +76,16 @@ def resolve_turn(
     # - IDLE means intentional no action
     # - NONE means forced skip (recovery)
 
+    # Make recovery visible
+    if p_cmd == Command.NONE:
+        text_parts.append(f"{player.name} is recovering (SKIP).")
+    if c_cmd == Command.NONE:
+        text_parts.append(f"{cpu.name} is recovering (SKIP).")
+
+    # Quick “no action” clarity (does not affect damage/pressure)
+    if p_cmd == Command.IDLE and c_cmd == Command.IDLE:
+        text_parts.append("Both idled.")
+
     # Attack vs Attack
     if p_cmd == Command.ATTACK and c_cmd == Command.ATTACK:
         text_parts.append("Both attacked—clash! No damage.")
@@ -84,13 +95,10 @@ def resolve_turn(
     # Player counter
     if p_cmd == Command.COUNTER:
         if c_cmd == Command.ATTACK:
-            # successful counter
             c_damage += 1.0
-            cpu.dealt_damage_last_turn = False
             player.dealt_damage_last_turn = True
             text_parts.append(f"{player.name} COUNTERED! {cpu.name} takes 1.")
         else:
-            # failed counter -> recovery
             player.skip_next = True
             text_parts.append(f"{player.name} countered too early—recovery next turn.")
 
@@ -98,7 +106,6 @@ def resolve_turn(
     if c_cmd == Command.COUNTER:
         if p_cmd == Command.ATTACK:
             p_damage += 1.0
-            player.dealt_damage_last_turn = False
             cpu.dealt_damage_last_turn = True
             text_parts.append(f"{cpu.name} COUNTERED! {player.name} takes 1.")
         else:
@@ -106,8 +113,6 @@ def resolve_turn(
             text_parts.append(f"{cpu.name} countered too early—recovery next turn.")
 
     # Attacks (only apply if not negated by being countered)
-    # If someone countered successfully, the attacker already got punished and does not deal damage.
-    # So: if target used counter vs that attack, ignore that attack damage.
     player_attack_negated = (c_cmd == Command.COUNTER and p_cmd == Command.ATTACK)
     cpu_attack_negated = (p_cmd == Command.COUNTER and c_cmd == Command.ATTACK)
 
@@ -117,7 +122,6 @@ def resolve_turn(
             player.dealt_damage_last_turn = True
             text_parts.append(f"{player.name} ATTACK hits a BLOCK: {cpu.name} takes 0.5.")
         elif c_cmd in (Command.NONE, Command.IDLE, Command.ATTACK, Command.COUNTER):
-            # attack vs idle/none or vs counter (failed counter already handled)
             c_damage += 1.0
             player.dealt_damage_last_turn = True
             text_parts.append(f"{player.name} ATTACK lands: {cpu.name} takes 1.")
@@ -132,9 +136,7 @@ def resolve_turn(
             cpu.dealt_damage_last_turn = True
             text_parts.append(f"{cpu.name} ATTACK lands: {player.name} takes 1.")
 
-    # If a fighter dealt damage, they "answered back" -> reduce pressure
-    # If they took damage and did not deal damage, pressure increases
-    # If no damage happened, pressure decays slightly
+    # Pressure update
     def update_pressure(f: Fighter, took: float, dealt: bool) -> None:
         if took > 0 and not dealt:
             f.pressure += 1
@@ -150,8 +152,11 @@ def resolve_turn(
     update_pressure(player, p_damage, player.dealt_damage_last_turn)
     update_pressure(cpu, c_damage, cpu.dealt_damage_last_turn)
 
-    if not text_parts:
-        text_parts.append("Both hesitated. No damage.")
+    # If literally nothing happened besides idle/skip messaging, be explicit
+    if not any(("takes" in s or "clash" in s or "COUNTERED" in s or "hits" in s or "lands" in s) for s in text_parts):
+        # Keep a clean fallback that doesn’t overwrite recovery/idle notes
+        if not text_parts:
+            text_parts.append("No damage this turn.")
 
     return TurnOutcome(turn_index, p_cmd, c_cmd, p_damage, c_damage, " ".join(text_parts))
 
@@ -193,7 +198,6 @@ def run_battle(
             break
 
         # Knockoff by pressure (stage loss)
-        # If pressure reaches 4, they get knocked off
         if cpu.pressure >= 4:
             winner = player.name
             reason = "Opponent was knocked off the stage (pressure)."

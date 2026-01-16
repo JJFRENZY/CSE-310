@@ -1,10 +1,11 @@
 import pygame
 from typing import List, Optional
-from game_logic import Command, run_battle
+import random
+from game_logic import Command, Fighter, resolve_turn
 from ai import build_cpu_plan
 
 
-WIDTH, HEIGHT = 900, 540
+WIDTH, HEIGHT = 900, 650
 FPS = 60
 
 BG = (18, 18, 24)
@@ -22,14 +23,19 @@ def draw_text(screen, font, msg, x, y, color=TEXT):
     screen.blit(surf, (x, y))
 
 
-def command_label(cmd: Command) -> str:
-    return {
-        "A": "ATTACK",
-        "B": "BLOCK",
-        "C": "COUNTER",
-        "I": "IDLE",
-        "-": "SKIP",
-    }.get(cmd.value, "?")
+def wrap_two_lines(text: str, limit: int = 78) -> List[str]:
+    """Simple 2-line wrap for the turn card so it doesn't overflow."""
+    if len(text) <= limit:
+        return [text]
+    cut = text.rfind(" ", 0, limit)
+    if cut == -1:
+        cut = limit
+    first = text[:cut].strip()
+    second = text[cut:].strip()
+    # keep it to two lines max
+    if len(second) > limit:
+        second = second[:limit - 3].rstrip() + "..."
+    return [first, second]
 
 
 def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
@@ -39,6 +45,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 26)
     big = pygame.font.SysFont(None, 40)
+    huge = pygame.font.SysFont(None, 54)
 
     # Planning state
     plan: List[Optional[Command]] = [None] * 12
@@ -46,14 +53,35 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         Command.ATTACK: 5,
         Command.BLOCK: 2,
         Command.COUNTER: 1,
-        Command.IDLE: 99,  # effectively unlimited
+        Command.IDLE: 999,  # unlimited in practice
     }
 
     selected: Optional[Command] = None
+
+    # Modes: plan -> battle -> result
     mode = "plan"
+
+    # Battle playback state
+    player_plan: List[Command] = []
+    cpu_plan: List[Command] = []
+    player = Fighter(player_name)
+    cpu = Fighter(cpu_name)
+
+    turn_index = 0  # 0..11
+    intermission_ms = 1000
+    next_step_ms = 0
+
+    # On-screen "turn card"
+    turn_title = ""
+    turn_text = ""
+    hearts_line = ""
+    pressure_line = ""
+
+    # Log panel lines
     battle_log: List[str] = []
-    battle_winner = ""
-    battle_reason = ""
+
+    battle_winner: Optional[str] = None
+    battle_reason: str = ""
 
     def can_place(cmd: Command) -> bool:
         return remaining.get(cmd, 0) > 0
@@ -62,19 +90,53 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         nonlocal remaining
         if plan[i] is None and can_place(cmd):
             plan[i] = cmd
-            # Only reduce count for limited commands (Idle is "unlimited" but we keep it high anyway)
-            remaining[cmd] -= 1
+            # Only decrement limited commands; IDLE is unlimited
+            if cmd != Command.IDLE:
+                remaining[cmd] -= 1
 
     def erase_at(i: int) -> None:
         nonlocal remaining
         if plan[i] is not None:
             old = plan[i]
             plan[i] = None
-            remaining[old] += 1
+            if old != Command.IDLE:
+                remaining[old] += 1
+
+    def reset_to_plan() -> None:
+        nonlocal plan, remaining, selected, mode
+        nonlocal player_plan, cpu_plan, player, cpu, turn_index, next_step_ms
+        nonlocal turn_title, turn_text, hearts_line, pressure_line
+        nonlocal battle_log, battle_winner, battle_reason
+
+        plan = [None] * 12
+        remaining = {
+            Command.ATTACK: 5,
+            Command.BLOCK: 2,
+            Command.COUNTER: 1,
+            Command.IDLE: 999,
+        }
+        selected = None
+        mode = "plan"
+
+        player_plan = []
+        cpu_plan = []
+        player = Fighter(player_name)
+        cpu = Fighter(cpu_name)
+        turn_index = 0
+        next_step_ms = 0
+
+        turn_title = ""
+        turn_text = ""
+        hearts_line = ""
+        pressure_line = ""
+
+        battle_log = []
+        battle_winner = None
+        battle_reason = ""
 
     # Slot positions
     start_x = 50
-    start_y = 140
+    start_y = 160
 
     def slot_rect(i: int) -> pygame.Rect:
         row = i // 6
@@ -83,76 +145,142 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         y = start_y + row * (SLOT_H + SLOT_GAP)
         return pygame.Rect(x, y, SLOT_W, SLOT_H)
 
-    # Simple button rects
-    btn_attack = pygame.Rect(520, 160, 320, 50)
-    btn_block = pygame.Rect(520, 220, 320, 50)
-    btn_counter = pygame.Rect(520, 280, 320, 50)
-    btn_idle = pygame.Rect(520, 320, 320, 50)
-    btn_start = pygame.Rect(520, 380, 320, 60)
+    # Buttons
+    btn_attack = pygame.Rect(520, 180, 320, 50)
+    btn_block = pygame.Rect(520, 240, 320, 50)
+    btn_counter = pygame.Rect(520, 300, 320, 50)
+    btn_idle = pygame.Rect(520, 360, 320, 50)
+    btn_start = pygame.Rect(520, 430, 320, 60)
 
+    def draw_button(rect: pygame.Rect, label: str, active: bool, enabled: bool):
+        color = ACCENT if active else (90, 90, 120)
+        base = (30, 40, 45) if enabled else (25, 25, 30)
+        pygame.draw.rect(screen, base, rect, border_radius=10)
+        pygame.draw.rect(screen, color if enabled else (70, 70, 80), rect, 2, border_radius=10)
+        draw_text(screen, big, label, rect.x + 12, rect.y + 10, color if enabled else (140, 140, 150))
+
+    def start_battle() -> None:
+        nonlocal mode, player_plan, cpu_plan, player, cpu, turn_index, next_step_ms
+        nonlocal battle_log, battle_winner, battle_reason
+        nonlocal turn_title, turn_text, hearts_line, pressure_line
+
+        player_plan = [c for c in plan]  # type: ignore
+        cpu_plan = build_cpu_plan(player_plan)
+
+        player = Fighter(player_name)
+        cpu = Fighter(cpu_name)
+        turn_index = 0
+
+        battle_log = []
+        battle_winner = None
+        battle_reason = ""
+
+        turn_title = "Get Ready!"
+        turn_text = "Battle starts in 1 second..."
+        hearts_line = f"Hearts: {player.name}={player.hearts} | {cpu.name}={cpu.hearts}"
+        pressure_line = f"Pressure: {player.name}={player.pressure} | {cpu.name}={cpu.pressure}"
+
+        mode = "battle"
+        next_step_ms = pygame.time.get_ticks() + intermission_ms
+
+    def check_winner_after_turn() -> Optional[str]:
+        nonlocal battle_reason
+
+        if player.hearts <= 0 and cpu.hearts <= 0:
+            battle_reason = "Double KO!"
+            return None
+        if cpu.hearts <= 0:
+            battle_reason = "Opponent hearts reached 0."
+            return player.name
+        if player.hearts <= 0:
+            battle_reason = "Player hearts reached 0."
+            return cpu.name
+
+        if cpu.pressure >= 4:
+            battle_reason = "Opponent was knocked off the stage (pressure)."
+            return player.name
+        if player.pressure >= 4:
+            battle_reason = "Player was knocked off the stage (pressure)."
+            return cpu.name
+
+        return None
+
+    def do_sudden_death() -> None:
+        nonlocal battle_winner, battle_reason
+        battle_log.append("Sudden Death! Each fighter has a 50% chance to land a KO strike.")
+        if random.random() < 0.5:
+            battle_winner = player.name
+            battle_reason = "Sudden Death KO strike landed by player."
+        else:
+            battle_winner = cpu.name
+            battle_reason = "Sudden Death KO strike landed by CPU."
+
+    # Main loop
     while True:
         clock.tick(FPS)
+        now_ms = pygame.time.get_ticks()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 return
 
-            if mode == "plan":
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    mx, my = event.pos
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                reset_to_plan()
 
-                    if btn_attack.collidepoint(mx, my):
-                        selected = Command.ATTACK
-                    elif btn_block.collidepoint(mx, my):
-                        selected = Command.BLOCK
-                    elif btn_counter.collidepoint(mx, my):
-                        selected = Command.COUNTER
-                    elif btn_idle.collidepoint(mx, my):
-                        selected = Command.IDLE
-                    elif btn_start.collidepoint(mx, my):
-                        if all(c is not None for c in plan):
-                            # Start battle
-                            player_plan = [c for c in plan]  # type: ignore
-                            cpu_plan = build_cpu_plan(player_plan)
-                            result = run_battle(player_name, cpu_name, player_plan, cpu_plan)
-                            battle_log = result.log
-                            battle_winner = result.winner or "No winner"
-                            battle_reason = result.reason
-                            mode = "result"
-                        else:
-                            # do nothing; message is drawn
-                            pass
-                    else:
-                        # Click slots to place/erase
-                        for i in range(12):
-                            r = slot_rect(i)
-                            if r.collidepoint(mx, my):
-                                if event.button == 3:  # right click erase
-                                    erase_at(i)
-                                else:
-                                    if selected is not None:
-                                        place_at(i, selected)
-                                break
+            if mode == "plan" and event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = event.pos
 
-            elif mode == "result":
-                if event.type == pygame.KEYDOWN:
-                    # Press R to reset
-                    if event.key == pygame.K_r:
-                        plan = [None] * 12
-                        remaining = {
-                            Command.ATTACK: 5,
-                            Command.BLOCK: 2,
-                            Command.COUNTER: 1,
-                            Command.IDLE: 99,
-                        }
-                        selected = None
-                        battle_log = []
-                        battle_winner = ""
-                        battle_reason = ""
-                        mode = "plan"
+                if btn_attack.collidepoint(mx, my):
+                    selected = Command.ATTACK
+                elif btn_block.collidepoint(mx, my):
+                    selected = Command.BLOCK
+                elif btn_counter.collidepoint(mx, my):
+                    selected = Command.COUNTER
+                elif btn_idle.collidepoint(mx, my):
+                    selected = Command.IDLE
+                elif btn_start.collidepoint(mx, my):
+                    if all(c is not None for c in plan):
+                        start_battle()
+                else:
+                    for i in range(12):
+                        r = slot_rect(i)
+                        if r.collidepoint(mx, my):
+                            if event.button == 3:
+                                erase_at(i)
+                            else:
+                                if selected is not None:
+                                    place_at(i, selected)
+                            break
 
-        # Draw
+        # Battle playback: advance 1 turn every ~1 second
+        if mode == "battle" and now_ms >= next_step_ms and battle_winner is None:
+            if turn_index >= 12:
+                do_sudden_death()
+                mode = "result"
+            else:
+                p_cmd = player_plan[turn_index]
+                c_cmd = cpu_plan[turn_index]
+                out = resolve_turn(turn_index + 1, player, cpu, p_cmd, c_cmd)
+
+                turn_title = f"Turn {out.turn_index}: {player.name}[{out.p_cmd.value}] vs {cpu.name}[{out.c_cmd.value}]"
+                turn_text = out.text
+                hearts_line = f"Hearts: {player.name}={player.hearts} | {cpu.name}={cpu.hearts}"
+                pressure_line = f"Pressure: {player.name}={player.pressure} | {cpu.name}={cpu.pressure}"
+
+                battle_log.append(turn_title)
+                battle_log.append(f"    {turn_text}")
+                battle_log.append(f"    {hearts_line}")
+                battle_log.append(f"    {pressure_line}")
+
+                battle_winner = check_winner_after_turn()
+                if battle_winner is not None:
+                    mode = "result"
+                else:
+                    turn_index += 1
+                    next_step_ms = now_ms + intermission_ms
+
+        # DRAW
         screen.fill(BG)
 
         if mode == "plan":
@@ -167,41 +295,12 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 pygame.draw.rect(screen, (60, 60, 90), r, 2, border_radius=8)
                 draw_text(screen, font, f"{i+1}", r.x + 6, r.y + 6, (180, 180, 200))
                 if plan[i] is not None:
-                    cmd = plan[i]
-                    draw_text(screen, big, cmd.value, r.x + 22, r.y + 18, ACCENT)
+                    draw_text(screen, big, plan[i].value, r.x + 22, r.y + 18, ACCENT)
 
-            # Buttons
-            def draw_button(rect: pygame.Rect, label: str, active: bool, enabled: bool):
-                color = ACCENT if active else (90, 90, 120)
-                base = (30, 40, 45) if enabled else (25, 25, 30)
-                pygame.draw.rect(screen, base, rect, border_radius=10)
-                pygame.draw.rect(screen, color if enabled else (70, 70, 80), rect, 2, border_radius=10)
-                draw_text(screen, big, label, rect.x + 12, rect.y + 10, color if enabled else (140, 140, 150))
-
-            draw_button(
-                btn_attack,
-                f"Attack (A) — left: {remaining[Command.ATTACK]}",
-                selected == Command.ATTACK,
-                remaining[Command.ATTACK] > 0,
-            )
-            draw_button(
-                btn_block,
-                f"Block (B) — left: {remaining[Command.BLOCK]}",
-                selected == Command.BLOCK,
-                remaining[Command.BLOCK] > 0,
-            )
-            draw_button(
-                btn_counter,
-                f"Counter (C) — left: {remaining[Command.COUNTER]}",
-                selected == Command.COUNTER,
-                remaining[Command.COUNTER] > 0,
-            )
-            draw_button(
-                btn_idle,
-                "Idle (I) — no action",
-                selected == Command.IDLE,
-                True,
-            )
+            draw_button(btn_attack, f"Attack (A) — left: {remaining[Command.ATTACK]}", selected == Command.ATTACK, remaining[Command.ATTACK] > 0)
+            draw_button(btn_block, f"Block (B) — left: {remaining[Command.BLOCK]}", selected == Command.BLOCK, remaining[Command.BLOCK] > 0)
+            draw_button(btn_counter, f"Counter (C) — left: {remaining[Command.COUNTER]}", selected == Command.COUNTER, remaining[Command.COUNTER] > 0)
+            draw_button(btn_idle, "Idle (I) — no action", selected == Command.IDLE, True)
 
             all_filled = all(c is not None for c in plan)
             pygame.draw.rect(screen, (35, 35, 45), btn_start, border_radius=12)
@@ -209,38 +308,43 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             draw_text(screen, big, "START BATTLE", btn_start.x + 70, btn_start.y + 15, ACCENT if all_filled else WARN)
 
             if not all_filled:
-                draw_text(screen, font, "Fill all 12 turns to start.", 520, 455, WARN)
+                draw_text(screen, font, "Fill all 12 turns to start.", 520, 510, WARN)
 
-            # Rules summary
-            y = 465
-            draw_text(
-                screen,
-                font,
-                "Rules: 3 Hearts | A=5 (1 dmg) | B=2 (0.5 dmg vs A) | C=1 (reflects 1 vs A, else skip next) | I=Idle",
-                50,
-                y,
-            )
-            draw_text(
-                screen,
-                font,
-                "A vs A = no damage | 12 turns then Sudden Death | '-' means forced skip (counter recovery) | Pressure knockoff possible",
-                50,
-                y + 24,
-            )
+            y = 560
+            draw_text(screen, font, "Rules: 3 Hearts | A=5 (1 dmg) | B=2 (0.5 dmg vs A) | C=1 (reflects 1 vs A, else skip next) | I=Idle", 50, y)
+            draw_text(screen, font, "A vs A = no damage | 12 turns then Sudden Death | '-' means forced skip (counter recovery) | Pressure knockoff possible", 50, y + 24)
 
         else:
-            draw_text(screen, big, "Battle Results", 50, 30, ACCENT)
-            draw_text(screen, big, f"Winner: {battle_winner}", 50, 80, TEXT)
-            draw_text(screen, font, f"Reason: {battle_reason}", 50, 125, TEXT)
-            draw_text(screen, font, "Press R to plan again.", 50, 155, ACCENT)
+            header = "Battle Playback" if mode == "battle" else "Battle Results"
+            draw_text(screen, big, header, 50, 30, ACCENT)
+            draw_text(screen, font, "Press R to reset anytime.", 50, 60, (180, 180, 200))
+
+            # Turn card
+            card = pygame.Rect(50, 90, 800, 150)
+            pygame.draw.rect(screen, PANEL, card, border_radius=12)
+            pygame.draw.rect(screen, (60, 60, 90), card, 2, border_radius=12)
+
+            draw_text(screen, big, turn_title, 65, 110, TEXT)
+
+            wrapped = wrap_two_lines(turn_text, 78)
+            draw_text(screen, font, wrapped[0], 65, 150, TEXT)
+            if len(wrapped) > 1:
+                draw_text(screen, font, wrapped[1], 65, 170, TEXT)
+
+            draw_text(screen, font, hearts_line, 65, 190, ACCENT)
+            draw_text(screen, font, pressure_line, 65, 215, ACCENT)
+
+            if mode == "result":
+                winner_text = battle_winner if battle_winner is not None else "No winner"
+                draw_text(screen, huge, f"Winner: {winner_text}", 50, 255, ACCENT)
+                draw_text(screen, big, f"Reason: {battle_reason}", 50, 310, TEXT)
 
             # Log panel
-            panel = pygame.Rect(50, 190, 800, 310)
+            panel = pygame.Rect(50, 360, 800, 260)
             pygame.draw.rect(screen, PANEL, panel, border_radius=12)
             pygame.draw.rect(screen, (60, 60, 90), panel, 2, border_radius=12)
 
-            # show last N lines
-            lines = battle_log[-14:]
+            lines = battle_log[-10:]
             y = panel.y + 14
             for line in lines:
                 draw_text(screen, font, line[:110], panel.x + 14, y, TEXT)
