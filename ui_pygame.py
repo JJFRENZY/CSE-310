@@ -24,7 +24,6 @@ def draw_text(screen, font, msg, x, y, color=TEXT):
 
 
 def wrap_two_lines(text: str, limit: int = 78) -> List[str]:
-    """Simple 2-line wrap for the turn card so it doesn't overflow."""
     if len(text) <= limit:
         return [text]
     cut = text.rfind(" ", 0, limit)
@@ -32,10 +31,13 @@ def wrap_two_lines(text: str, limit: int = 78) -> List[str]:
         cut = limit
     first = text[:cut].strip()
     second = text[cut:].strip()
-    # keep it to two lines max
     if len(second) > limit:
         second = second[:limit - 3].rstrip() + "..."
     return [first, second]
+
+
+def clamp(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, v))
 
 
 def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
@@ -53,13 +55,11 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         Command.ATTACK: 5,
         Command.BLOCK: 2,
         Command.COUNTER: 1,
-        Command.IDLE: 999,  # unlimited in practice
+        Command.IDLE: 999,
     }
 
     selected: Optional[Command] = None
-
-    # Modes: plan -> battle -> result
-    mode = "plan"
+    mode = "plan"  # plan -> battle -> result
 
     # Battle playback state
     player_plan: List[Command] = []
@@ -68,7 +68,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     cpu = Fighter(cpu_name)
 
     turn_index = 0  # 0..11
-    intermission_ms = 1000
+    intermission_ms = 1500  # ✅ 1.5 seconds
     next_step_ms = 0
 
     # On-screen "turn card"
@@ -79,6 +79,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
 
     # Log panel lines
     battle_log: List[str] = []
+    log_scroll = 0  # ✅ number of lines to scroll back (0 = bottom)
 
     battle_winner: Optional[str] = None
     battle_reason: str = ""
@@ -90,7 +91,6 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         nonlocal remaining
         if plan[i] is None and can_place(cmd):
             plan[i] = cmd
-            # Only decrement limited commands; IDLE is unlimited
             if cmd != Command.IDLE:
                 remaining[cmd] -= 1
 
@@ -106,7 +106,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         nonlocal plan, remaining, selected, mode
         nonlocal player_plan, cpu_plan, player, cpu, turn_index, next_step_ms
         nonlocal turn_title, turn_text, hearts_line, pressure_line
-        nonlocal battle_log, battle_winner, battle_reason
+        nonlocal battle_log, battle_winner, battle_reason, log_scroll
 
         plan = [None] * 12
         remaining = {
@@ -131,6 +131,8 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         pressure_line = ""
 
         battle_log = []
+        log_scroll = 0
+
         battle_winner = None
         battle_reason = ""
 
@@ -152,6 +154,9 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     btn_idle = pygame.Rect(520, 360, 320, 50)
     btn_start = pygame.Rect(520, 430, 320, 60)
 
+    # Log panel rect (used for scroll detection)
+    log_panel = pygame.Rect(50, 360, 800, 260)
+
     def draw_button(rect: pygame.Rect, label: str, active: bool, enabled: bool):
         color = ACCENT if active else (90, 90, 120)
         base = (30, 40, 45) if enabled else (25, 25, 30)
@@ -161,7 +166,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
 
     def start_battle() -> None:
         nonlocal mode, player_plan, cpu_plan, player, cpu, turn_index, next_step_ms
-        nonlocal battle_log, battle_winner, battle_reason
+        nonlocal battle_log, battle_winner, battle_reason, log_scroll
         nonlocal turn_title, turn_text, hearts_line, pressure_line
 
         player_plan = [c for c in plan]  # type: ignore
@@ -172,11 +177,12 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         turn_index = 0
 
         battle_log = []
+        log_scroll = 0
         battle_winner = None
         battle_reason = ""
 
         turn_title = "Get Ready!"
-        turn_text = "Battle starts in 1 second..."
+        turn_text = "Battle starts in 1.5 seconds..."
         hearts_line = f"Hearts: {player.name}={player.hearts} | {cpu.name}={cpu.hearts}"
         pressure_line = f"Pressure: {player.name}={player.pressure} | {cpu.name}={cpu.pressure}"
 
@@ -215,6 +221,9 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             battle_winner = cpu.name
             battle_reason = "Sudden Death KO strike landed by CPU."
 
+    def max_scroll(lines_per_page: int) -> int:
+        return max(0, len(battle_log) - lines_per_page)
+
     # Main loop
     while True:
         clock.tick(FPS)
@@ -225,8 +234,29 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 pygame.quit()
                 return
 
+            # Reset anytime
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 reset_to_plan()
+
+            # Scroll log (battle/result screens only)
+            if mode in ("battle", "result"):
+                if event.type == pygame.MOUSEWHEEL:
+                    # Only scroll when mouse is over the log panel
+                    mx, my = pygame.mouse.get_pos()
+                    if log_panel.collidepoint(mx, my):
+                        # wheel up -> see older lines -> increase scroll
+                        log_scroll += (-event.y) * 2
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_UP:
+                        log_scroll += 2
+                    elif event.key == pygame.K_DOWN:
+                        log_scroll -= 2
+                    elif event.key == pygame.K_PAGEUP:
+                        log_scroll += 10
+                    elif event.key == pygame.K_PAGEDOWN:
+                        log_scroll -= 10
+                    elif event.key == pygame.K_END:
+                        log_scroll = 0  # jump to bottom
 
             if mode == "plan" and event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
@@ -253,7 +283,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                                     place_at(i, selected)
                             break
 
-        # Battle playback: advance 1 turn every ~1 second
+        # Battle playback: advance 1 turn every ~1.5 seconds
         if mode == "battle" and now_ms >= next_step_ms and battle_winner is None:
             if turn_index >= 12:
                 do_sudden_death()
@@ -317,7 +347,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         else:
             header = "Battle Playback" if mode == "battle" else "Battle Results"
             draw_text(screen, big, header, 50, 30, ACCENT)
-            draw_text(screen, font, "Press R to reset anytime.", 50, 60, (180, 180, 200))
+            draw_text(screen, font, "Scroll log: Mouse wheel over log / ↑↓ / PgUp PgDn / End. Press R to reset.", 50, 60, (180, 180, 200))
 
             # Turn card
             card = pygame.Rect(50, 90, 800, 150)
@@ -340,14 +370,34 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 draw_text(screen, big, f"Reason: {battle_reason}", 50, 310, TEXT)
 
             # Log panel
-            panel = pygame.Rect(50, 360, 800, 260)
-            pygame.draw.rect(screen, PANEL, panel, border_radius=12)
-            pygame.draw.rect(screen, (60, 60, 90), panel, 2, border_radius=12)
+            pygame.draw.rect(screen, PANEL, log_panel, border_radius=12)
+            pygame.draw.rect(screen, (60, 60, 90), log_panel, 2, border_radius=12)
 
-            lines = battle_log[-10:]
-            y = panel.y + 14
-            for line in lines:
-                draw_text(screen, font, line[:110], panel.x + 14, y, TEXT)
+            # How many lines fit?
+            lines_per_page = (log_panel.height - 28) // 22  # consistent with line height
+            max_s = max_scroll(lines_per_page)
+            log_scroll = clamp(log_scroll, 0, max_s)
+
+            # Show a "window" of log lines
+            # scroll=0 means show bottom-most lines
+            end = len(battle_log) - log_scroll
+            start = max(0, end - lines_per_page)
+            view = battle_log[start:end]
+
+            y = log_panel.y + 14
+            for line in view:
+                draw_text(screen, font, line[:110], log_panel.x + 14, y, TEXT)
                 y += 22
+
+            # Small scroll indicator
+            if len(battle_log) > lines_per_page:
+                draw_text(
+                    screen,
+                    font,
+                    f"Log: showing lines {start + 1}-{end} of {len(battle_log)} (scroll {log_scroll})",
+                    log_panel.x + 14,
+                    log_panel.bottom - 24,
+                    (180, 180, 200),
+                )
 
         pygame.display.flip()
