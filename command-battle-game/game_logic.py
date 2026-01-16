@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import random
 
 
@@ -9,7 +9,8 @@ class Command(str, Enum):
     ATTACK = "A"
     BLOCK = "B"
     COUNTER = "C"
-    NONE = "-"  # used only for skipped/recovery turns
+    IDLE = "I"     # player-chosen "do nothing"
+    NONE = "-"     # forced skip (recovery turn)
 
 
 @dataclass
@@ -71,7 +72,8 @@ def resolve_turn(
     # - Counter vs Attack reflects 1 damage to attacker, countering takes 0
     # - Counter vs non-attack: counter user skips next turn
     # - Attack vs Attack: both fail (0)
-    # - NONE means no action
+    # - IDLE means intentional no action
+    # - NONE means forced skip (recovery)
 
     # Attack vs Attack
     if p_cmd == Command.ATTACK and c_cmd == Command.ATTACK:
@@ -114,8 +116,8 @@ def resolve_turn(
             c_damage += 0.5
             player.dealt_damage_last_turn = True
             text_parts.append(f"{player.name} ATTACK hits a BLOCK: {cpu.name} takes 0.5.")
-        elif c_cmd in (Command.NONE, Command.ATTACK, Command.COUNTER):
-            # attack vs none or vs counter (failed counter already handled)
+        elif c_cmd in (Command.NONE, Command.IDLE, Command.ATTACK, Command.COUNTER):
+            # attack vs idle/none or vs counter (failed counter already handled)
             c_damage += 1.0
             player.dealt_damage_last_turn = True
             text_parts.append(f"{player.name} ATTACK lands: {cpu.name} takes 1.")
@@ -125,7 +127,7 @@ def resolve_turn(
             p_damage += 0.5
             cpu.dealt_damage_last_turn = True
             text_parts.append(f"{cpu.name} ATTACK hits a BLOCK: {player.name} takes 0.5.")
-        elif p_cmd in (Command.NONE, Command.ATTACK, Command.COUNTER):
+        elif p_cmd in (Command.NONE, Command.IDLE, Command.ATTACK, Command.COUNTER):
             p_damage += 1.0
             cpu.dealt_damage_last_turn = True
             text_parts.append(f"{cpu.name} ATTACK lands: {player.name} takes 1.")

@@ -4,7 +4,6 @@ from game_logic import Command, run_battle
 from ai import build_cpu_plan
 
 
-
 WIDTH, HEIGHT = 900, 540
 FPS = 60
 
@@ -24,7 +23,13 @@ def draw_text(screen, font, msg, x, y, color=TEXT):
 
 
 def command_label(cmd: Command) -> str:
-    return {"A": "ATTACK", "B": "BLOCK", "C": "COUNTER", "-": "SKIP"}.get(cmd.value, "?")
+    return {
+        "A": "ATTACK",
+        "B": "BLOCK",
+        "C": "COUNTER",
+        "I": "IDLE",
+        "-": "SKIP",
+    }.get(cmd.value, "?")
 
 
 def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
@@ -37,7 +42,12 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
 
     # Planning state
     plan: List[Optional[Command]] = [None] * 12
-    remaining = {Command.ATTACK: 5, Command.BLOCK: 2, Command.COUNTER: 1}
+    remaining = {
+        Command.ATTACK: 5,
+        Command.BLOCK: 2,
+        Command.COUNTER: 1,
+        Command.IDLE: 99,  # effectively unlimited
+    }
 
     selected: Optional[Command] = None
     mode = "plan"
@@ -52,6 +62,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         nonlocal remaining
         if plan[i] is None and can_place(cmd):
             plan[i] = cmd
+            # Only reduce count for limited commands (Idle is "unlimited" but we keep it high anyway)
             remaining[cmd] -= 1
 
     def erase_at(i: int) -> None:
@@ -76,10 +87,11 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     btn_attack = pygame.Rect(520, 160, 320, 50)
     btn_block = pygame.Rect(520, 220, 320, 50)
     btn_counter = pygame.Rect(520, 280, 320, 50)
-    btn_start = pygame.Rect(520, 360, 320, 60)
+    btn_idle = pygame.Rect(520, 320, 320, 50)
+    btn_start = pygame.Rect(520, 380, 320, 60)
 
     while True:
-        dt = clock.tick(FPS) / 1000.0
+        clock.tick(FPS)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -96,6 +108,8 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                         selected = Command.BLOCK
                     elif btn_counter.collidepoint(mx, my):
                         selected = Command.COUNTER
+                    elif btn_idle.collidepoint(mx, my):
+                        selected = Command.IDLE
                     elif btn_start.collidepoint(mx, my):
                         if all(c is not None for c in plan):
                             # Start battle
@@ -126,7 +140,12 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                     # Press R to reset
                     if event.key == pygame.K_r:
                         plan = [None] * 12
-                        remaining = {Command.ATTACK: 5, Command.BLOCK: 2, Command.COUNTER: 1}
+                        remaining = {
+                            Command.ATTACK: 5,
+                            Command.BLOCK: 2,
+                            Command.COUNTER: 1,
+                            Command.IDLE: 99,
+                        }
                         selected = None
                         battle_log = []
                         battle_winner = ""
@@ -159,9 +178,30 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 pygame.draw.rect(screen, color if enabled else (70, 70, 80), rect, 2, border_radius=10)
                 draw_text(screen, big, label, rect.x + 12, rect.y + 10, color if enabled else (140, 140, 150))
 
-            draw_button(btn_attack, f"Attack (A) — left: {remaining[Command.ATTACK]}", selected == Command.ATTACK, remaining[Command.ATTACK] > 0)
-            draw_button(btn_block, f"Block (B) — left: {remaining[Command.BLOCK]}", selected == Command.BLOCK, remaining[Command.BLOCK] > 0)
-            draw_button(btn_counter, f"Counter (C) — left: {remaining[Command.COUNTER]}", selected == Command.COUNTER, remaining[Command.COUNTER] > 0)
+            draw_button(
+                btn_attack,
+                f"Attack (A) — left: {remaining[Command.ATTACK]}",
+                selected == Command.ATTACK,
+                remaining[Command.ATTACK] > 0,
+            )
+            draw_button(
+                btn_block,
+                f"Block (B) — left: {remaining[Command.BLOCK]}",
+                selected == Command.BLOCK,
+                remaining[Command.BLOCK] > 0,
+            )
+            draw_button(
+                btn_counter,
+                f"Counter (C) — left: {remaining[Command.COUNTER]}",
+                selected == Command.COUNTER,
+                remaining[Command.COUNTER] > 0,
+            )
+            draw_button(
+                btn_idle,
+                "Idle (I) — no action",
+                selected == Command.IDLE,
+                True,
+            )
 
             all_filled = all(c is not None for c in plan)
             pygame.draw.rect(screen, (35, 35, 45), btn_start, border_radius=12)
@@ -169,12 +209,24 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             draw_text(screen, big, "START BATTLE", btn_start.x + 70, btn_start.y + 15, ACCENT if all_filled else WARN)
 
             if not all_filled:
-                draw_text(screen, font, "Fill all 12 turns to start.", 520, 430, WARN)
+                draw_text(screen, font, "Fill all 12 turns to start.", 520, 455, WARN)
 
             # Rules summary
-            y = 460
-            draw_text(screen, font, "Rules: 3 Hearts | A=5 (1 dmg) | B=2 (0.5 dmg vs A) | C=1 (reflects 1 vs A, else skip next)", 50, y)
-            draw_text(screen, font, "A vs A = no damage | 12 turns then Sudden Death | Pressure knockoff if you keep taking hits without answering back", 50, y + 24)
+            y = 465
+            draw_text(
+                screen,
+                font,
+                "Rules: 3 Hearts | A=5 (1 dmg) | B=2 (0.5 dmg vs A) | C=1 (reflects 1 vs A, else skip next) | I=Idle",
+                50,
+                y,
+            )
+            draw_text(
+                screen,
+                font,
+                "A vs A = no damage | 12 turns then Sudden Death | '-' means forced skip (counter recovery) | Pressure knockoff possible",
+                50,
+                y + 24,
+            )
 
         else:
             draw_text(screen, big, "Battle Results", 50, 30, ACCENT)
