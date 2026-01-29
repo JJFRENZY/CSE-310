@@ -1,6 +1,7 @@
 import pygame
 from typing import List, Optional
 import random
+
 from game_logic import Command, Fighter, Character, get_command_limits, resolve_turn
 from ai import build_cpu_plan, choose_cpu_character
 
@@ -13,14 +14,78 @@ PANEL = (32, 32, 44)
 TEXT = (235, 235, 245)
 ACCENT = (120, 220, 160)
 WARN = (235, 120, 120)
+SOFT = (180, 180, 200)
 
 SLOT_W, SLOT_H = 60, 60
 SLOT_GAP = 10
 
 
+# --- Character colors (used for UI name labels, etc.)
+CHAR_COLORS = {
+    Character.NORMAL: (220, 220, 220),
+
+    Character.RED_FIGHTER: (235, 90, 90),
+    Character.BLUE_HIJUMP: (90, 150, 235),
+    Character.BROWN_STONE: (160, 120, 80),
+    Character.GREEN_PLASMA: (90, 235, 160),
+    Character.WHITE_MIRROR: (245, 245, 245),
+    Character.ORANGE_FIRE: (245, 160, 80),
+    Character.YELLOW_BEAM: (245, 235, 90),
+    Character.PURPLE_NINJA: (180, 110, 245),
+}
+
+# --- Character descriptions (for the info window)
+CHAR_INFO = {
+    Character.NORMAL: "No special rule changes.",
+
+    Character.RED_FIGHTER: "Fighter: You can plan 6 Attacks instead of 5.",
+
+    Character.BLUE_HIJUMP:
+        "Hi-Jump: If you Counter unsuccessfully, your forced recovery turn is INVINCIBLE.",
+
+    Character.BROWN_STONE:
+        "Stone: Block prevents ALL damage (no 0.5 chip).",
+
+    Character.GREEN_PLASMA:
+        "Plasma: A Block/Counter that successfully stops an Attack also deals +0.5 damage back.",
+
+    Character.WHITE_MIRROR:
+        "Mirror: A successful Counter deals 2 hearts instead of 1.",
+
+    Character.ORANGE_FIRE:
+        "Fire: Your Attacks still land even if the opponent Counters.",
+
+    Character.YELLOW_BEAM:
+        "Beam: If BOTH players choose IDLE on the same turn, the opponent takes 1 heart "
+        "(not triggered by forced '-' recovery).",
+
+    Character.PURPLE_NINJA:
+        "Ninja: If both Attack on the same turn, your opponent still takes 0.5 damage.",
+}
+
+
 def draw_text(screen, font, msg, x, y, color=TEXT):
     surf = font.render(msg, True, color)
     screen.blit(surf, (x, y))
+
+
+def wrap_lines(text: str, limit: int = 56) -> List[str]:
+    """Simple word wrap for info box."""
+    words = text.split()
+    lines: List[str] = []
+    current: List[str] = []
+    count = 0
+    for w in words:
+        if count + len(w) + (1 if current else 0) > limit:
+            lines.append(" ".join(current))
+            current = [w]
+            count = len(w)
+        else:
+            current.append(w)
+            count += len(w) + (1 if current[:-1] else 0)
+    if current:
+        lines.append(" ".join(current))
+    return lines
 
 
 def wrap_two_lines(text: str, limit: int = 78) -> List[str]:
@@ -44,16 +109,30 @@ def character_label(ch: Character) -> str:
     return ch.value
 
 
+def draw_panel(screen, rect: pygame.Rect):
+    pygame.draw.rect(screen, PANEL, rect, border_radius=12)
+    pygame.draw.rect(screen, (60, 60, 90), rect, 2, border_radius=12)
+
+
+def draw_arrow_button(screen, rect: pygame.Rect, label: str, font, enabled=True):
+    base = (35, 35, 45) if enabled else (25, 25, 30)
+    border = ACCENT if enabled else (70, 70, 80)
+    pygame.draw.rect(screen, base, rect, border_radius=10)
+    pygame.draw.rect(screen, border, rect, 2, border_radius=10)
+    draw_text(screen, font, label, rect.x + 18, rect.y + 10, border)
+
+
 def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption("Command Battle (12 Turns)")
     clock = pygame.time.Clock()
+
     font = pygame.font.SysFont(None, 26)
     big = pygame.font.SysFont(None, 40)
     huge = pygame.font.SysFont(None, 54)
 
-    # Character list (player selects from these)
+    # Available characters (player picks; CPU auto-picks)
     characters: List[Character] = [
         Character.NORMAL,
         Character.RED_FIGHTER,
@@ -65,17 +144,13 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         Character.YELLOW_BEAM,
         Character.PURPLE_NINJA,
     ]
-
-    # CPU options: None means "AUTO"
-    cpu_options: List[Optional[Character]] = [None] + characters
-
     player_char_idx = 0
-    cpu_char_idx = 0  # starts at AUTO
 
     # Planning state
     plan: List[Optional[Command]] = [None] * 12
+    selected: Optional[Command] = None
+    mode = "select"  # select -> plan -> battle -> result
 
-    # remaining counts (derived from plan + character limits)
     remaining = {
         Command.ATTACK: 5,
         Command.BLOCK: 2,
@@ -83,16 +158,13 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         Command.IDLE: 999,
     }
 
-    selected: Optional[Command] = None
-    mode = "select"  # select -> plan -> battle -> result
-
     # Battle playback state
     player_plan: List[Command] = []
     cpu_plan: List[Command] = []
     player = Fighter(player_name)
     cpu = Fighter(cpu_name)
 
-    turn_index = 0  # 0..11
+    turn_index = 0
     intermission_ms = 1500
     next_step_ms = 0
 
@@ -102,31 +174,21 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     hearts_line = ""
     pressure_line = ""
 
-    # Log panel lines
     battle_log: List[str] = []
     log_scroll = 0
 
     battle_winner: Optional[str] = None
     battle_reason: str = ""
 
-    def cpu_choice_label() -> str:
-        choice = cpu_options[cpu_char_idx]
-        return "CPU Auto" if choice is None else character_label(choice)
+    # CPU character chosen at battle start (AUTO)
+    cpu_character_choice: Character = Character.NORMAL
 
     def recompute_remaining_from_plan() -> None:
-        """
-        Rebuild remaining counts from:
-        - the player's current character limits
-        - what is already placed in plan
-        This prevents "changing character to cheat limits".
-        """
         nonlocal remaining
         limits = get_command_limits(characters[player_char_idx])
-
         used_attack = sum(1 for c in plan if c == Command.ATTACK)
         used_block = sum(1 for c in plan if c == Command.BLOCK)
         used_counter = sum(1 for c in plan if c == Command.COUNTER)
-
         remaining = {
             Command.ATTACK: max(0, limits[Command.ATTACK] - used_attack),
             Command.BLOCK: max(0, limits[Command.BLOCK] - used_block),
@@ -154,6 +216,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         nonlocal player_plan, cpu_plan, player, cpu, turn_index, next_step_ms
         nonlocal turn_title, turn_text, hearts_line, pressure_line
         nonlocal battle_log, battle_winner, battle_reason, log_scroll
+        nonlocal cpu_character_choice
 
         plan = [None] * 12
         selected = None
@@ -163,6 +226,8 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         cpu_plan = []
         player = Fighter(player_name)
         cpu = Fighter(cpu_name)
+        cpu_character_choice = Character.NORMAL
+
         turn_index = 0
         next_step_ms = 0
 
@@ -173,7 +238,6 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
 
         battle_log = []
         log_scroll = 0
-
         battle_winner = None
         battle_reason = ""
 
@@ -187,7 +251,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         recompute_remaining_from_plan()
         mode = "plan"
 
-    # Slot positions
+    # Slots
     start_x = 50
     start_y = 160
 
@@ -198,19 +262,20 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         y = start_y + row * (SLOT_H + SLOT_GAP)
         return pygame.Rect(x, y, SLOT_W, SLOT_H)
 
-    # Buttons (plan)
+    # Plan buttons
     btn_attack = pygame.Rect(520, 180, 320, 50)
     btn_block = pygame.Rect(520, 240, 320, 50)
     btn_counter = pygame.Rect(520, 300, 320, 50)
     btn_idle = pygame.Rect(520, 360, 320, 50)
     btn_start = pygame.Rect(520, 430, 320, 60)
 
-    # Buttons (select)
-    btn_p_prev = pygame.Rect(50, 170, 60, 50)
-    btn_p_next = pygame.Rect(360, 170, 60, 50)
-    btn_c_prev = pygame.Rect(50, 290, 60, 50)
-    btn_c_next = pygame.Rect(360, 290, 60, 50)
-    btn_to_plan = pygame.Rect(520, 520, 320, 70)
+    # Select screen layout (fixed so arrows never cover the label)
+    select_panel_player = pygame.Rect(50, 140, 520, 120)
+    btn_p_prev = pygame.Rect(select_panel_player.x + 20, select_panel_player.y + 55, 60, 50)
+    btn_p_next = pygame.Rect(select_panel_player.right - 80, select_panel_player.y + 55, 60, 50)
+
+    info_panel = pygame.Rect(50, 280, 520, 140)
+    btn_to_plan = pygame.Rect(600, 520, 250, 70)
 
     # Log panel rect
     log_panel = pygame.Rect(50, 360, 800, 260)
@@ -226,27 +291,23 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         nonlocal mode, player_plan, cpu_plan, player, cpu, turn_index, next_step_ms
         nonlocal battle_log, battle_winner, battle_reason, log_scroll
         nonlocal turn_title, turn_text, hearts_line, pressure_line
+        nonlocal cpu_character_choice
 
         p_char = characters[player_char_idx]
 
-        # CPU pick (auto or manual)
-        cpu_choice = cpu_options[cpu_char_idx]
-        if cpu_choice is None:
-            c_char = choose_cpu_character(player_character=p_char)
-        else:
-            c_char = cpu_choice
+        # ✅ CPU auto-picks its character here
+        cpu_character_choice = choose_cpu_character(player_character=p_char)
 
         player_plan = [c for c in plan]  # type: ignore
 
-        # Pass character info into AI (Red gets 6 attacks, etc.)
         cpu_plan = build_cpu_plan(
             player_plan,
-            cpu_character=c_char,
+            cpu_character=cpu_character_choice,
             player_character=p_char,
         )
 
         player = Fighter(player_name, character=p_char)
-        cpu = Fighter(cpu_name, character=c_char)
+        cpu = Fighter(cpu_name, character=cpu_character_choice)
         turn_index = 0
 
         battle_log = []
@@ -259,9 +320,8 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         hearts_line = f"Hearts: {player.name}={player.hearts} | {cpu.name}={cpu.hearts}"
         pressure_line = f"Pressure: {player.name}={player.pressure} | {cpu.name}={cpu.pressure}"
 
-        # Character header into log
         battle_log.append(f"Player Character: {character_label(p_char)}")
-        battle_log.append(f"CPU Character: {character_label(c_char)}" + (" (AUTO)" if cpu_choice is None else ""))
+        battle_log.append(f"CPU Character: {character_label(cpu_character_choice)}")
         battle_log.append("")
 
         mode = "battle"
@@ -302,10 +362,8 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     def max_scroll(lines_per_page: int) -> int:
         return max(0, len(battle_log) - lines_per_page)
 
-    # Initialize remaining
     recompute_remaining_from_plan()
 
-    # Main loop
     while True:
         clock.tick(FPS)
         now_ms = pygame.time.get_ticks()
@@ -315,11 +373,10 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 pygame.quit()
                 return
 
-            # Reset anytime -> back to character select
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 reset_to_select()
 
-            # Scroll log (battle/result)
+            # Scroll log
             if mode in ("battle", "result"):
                 if event.type == pygame.MOUSEWHEEL:
                     mx, my = pygame.mouse.get_pos()
@@ -337,7 +394,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                     elif event.key == pygame.K_END:
                         log_scroll = 0
 
-            # Character select clicks
+            # Select screen clicks
             if mode == "select" and event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
                 if btn_p_prev.collidepoint(mx, my):
@@ -346,17 +403,12 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 elif btn_p_next.collidepoint(mx, my):
                     player_char_idx = (player_char_idx + 1) % len(characters)
                     recompute_remaining_from_plan()
-                elif btn_c_prev.collidepoint(mx, my):
-                    cpu_char_idx = (cpu_char_idx - 1) % len(cpu_options)
-                elif btn_c_next.collidepoint(mx, my):
-                    cpu_char_idx = (cpu_char_idx + 1) % len(cpu_options)
                 elif btn_to_plan.collidepoint(mx, my):
                     reset_to_plan()
 
             # Plan clicks
             if mode == "plan" and event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
-
                 if btn_attack.collidepoint(mx, my):
                     selected = Command.ATTACK
                 elif btn_block.collidepoint(mx, my):
@@ -379,7 +431,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                                     place_at(i, selected)
                             break
 
-        # Battle playback: advance 1 turn every 1.5 seconds
+        # Battle playback
         if mode == "battle" and now_ms >= next_step_ms and battle_winner is None:
             if turn_index >= 12:
                 do_sudden_death()
@@ -401,7 +453,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 battle_log.append(f"    {turn_text}")
                 battle_log.append(f"    {hearts_line}")
                 battle_log.append(f"    {pressure_line}")
-                battle_log.append("")  # spacer
+                battle_log.append("")
 
                 battle_winner = check_winner_after_turn()
                 if battle_winner is not None:
@@ -414,56 +466,77 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
         screen.fill(BG)
 
         if mode == "select":
-            draw_text(screen, huge, "Choose Characters", 50, 60, ACCENT)
-            draw_text(screen, font, "Press R anytime to restart. Then you plan your 12 turns.", 50, 110, (180, 180, 200))
+            p_char = characters[player_char_idx]
+            p_color = CHAR_COLORS.get(p_char, TEXT)
 
-            # Player selector
-            pygame.draw.rect(screen, PANEL, pygame.Rect(50, 150, 420, 90), border_radius=12)
-            pygame.draw.rect(screen, (60, 60, 90), pygame.Rect(50, 150, 420, 90), 2, border_radius=12)
-            draw_text(screen, big, "Player Character", 70, 160, TEXT)
-            draw_button(btn_p_prev, "<", False, True)
-            draw_button(btn_p_next, ">", False, True)
-            draw_text(screen, big, character_label(characters[player_char_idx]), 130, 185, ACCENT)
+            draw_text(screen, huge, "Choose Your Character Color", 50, 60, ACCENT)
+            draw_text(screen, font, "Press R anytime to restart. CPU picks its color automatically.", 50, 110, SOFT)
 
-            # CPU selector
-            pygame.draw.rect(screen, PANEL, pygame.Rect(50, 270, 420, 90), border_radius=12)
-            pygame.draw.rect(screen, (60, 60, 90), pygame.Rect(50, 270, 420, 90), 2, border_radius=12)
-            draw_text(screen, big, "CPU Character", 70, 280, TEXT)
-            draw_button(btn_c_prev, "<", False, True)
-            draw_button(btn_c_next, ">", False, True)
-            draw_text(screen, big, cpu_choice_label(), 130, 305, ACCENT)
+            # Player selection panel
+            draw_panel(screen, select_panel_player)
+            draw_text(screen, big, "Player Character", select_panel_player.x + 20, select_panel_player.y + 15, TEXT)
 
+            # Arrows (fixed positions, not overlapping the label)
+            draw_arrow_button(screen, btn_p_prev, "<", big, enabled=True)
+            draw_arrow_button(screen, btn_p_next, ">", big, enabled=True)
+
+            # Character name centered between arrows
+            name_area = pygame.Rect(
+                btn_p_prev.right + 10,
+                btn_p_prev.y,
+                btn_p_next.x - (btn_p_prev.right + 10),
+                btn_p_prev.height,
+            )
+            # Centered draw
+            label = character_label(p_char)
+            label_surf = big.render(label, True, p_color)
+            label_x = name_area.x + (name_area.width - label_surf.get_width()) // 2
+            label_y = name_area.y + (name_area.height - label_surf.get_height()) // 2
+            screen.blit(label_surf, (label_x, label_y))
+
+            # Info panel: what this character does
+            draw_panel(screen, info_panel)
+            draw_text(screen, big, "What this color does:", info_panel.x + 20, info_panel.y + 15, TEXT)
+
+            info_text = CHAR_INFO.get(p_char, "")
+            lines = wrap_lines(info_text, limit=62)
+            y = info_panel.y + 55
+            for line in lines[:4]:
+                draw_text(screen, font, line, info_panel.x + 20, y, SOFT)
+                y += 24
+
+            # CPU info preview text (auto)
             draw_text(
                 screen,
                 font,
-                "Tip: Red gets 6 Attacks in planning. Others change battle rules during playback.",
+                "CPU: AUTO (it will pick a color at battle start based on yours).",
                 50,
-                390,
-                (180, 180, 200),
+                445,
+                SOFT,
             )
 
+            # Continue button
             pygame.draw.rect(screen, (35, 35, 45), btn_to_plan, border_radius=14)
             pygame.draw.rect(screen, ACCENT, btn_to_plan, 2, border_radius=14)
-            draw_text(screen, huge, "PLAN TURNS", btn_to_plan.x + 70, btn_to_plan.y + 12, ACCENT)
+            draw_text(screen, huge, "PLAN", btn_to_plan.x + 70, btn_to_plan.y + 12, ACCENT)
 
         elif mode == "plan":
             p_char = characters[player_char_idx]
-            cpu_choice = cpu_options[cpu_char_idx]
-
-            cpu_display = "CPU Auto" if cpu_choice is None else character_label(cpu_choice)
+            p_color = CHAR_COLORS.get(p_char, TEXT)
 
             draw_text(screen, big, "Command Battle — Plan 12 Turns", 50, 40, ACCENT)
-            draw_text(screen, font, "Left-click a slot to place the selected command. Right-click a slot to erase.", 50, 80)
-            draw_text(screen, font, "Select a command on the right, then fill ALL 12 slots.", 50, 105)
-            draw_text(screen, font, f"Player: {player_name} — {character_label(p_char)}", 50, 130, (180, 180, 200))
-            draw_text(screen, font, f"CPU: {cpu_name} — {cpu_display}", 50, 150, (180, 180, 200))
+            draw_text(screen, font, "Left-click a slot to place the selected command. Right-click to erase.", 50, 80)
+            draw_text(screen, font, "Fill ALL 12 slots, then start battle.", 50, 105)
+
+            draw_text(screen, font, f"Player: {player_name} — {character_label(p_char)}", 50, 130, p_color)
+            draw_text(screen, font, "CPU: AUTO (chooses at battle start)", 50, 150, SOFT)
 
             # Slots
             for i in range(12):
                 r = slot_rect(i)
                 pygame.draw.rect(screen, PANEL, r, border_radius=8)
                 pygame.draw.rect(screen, (60, 60, 90), r, 2, border_radius=8)
-                draw_text(screen, font, f"{i+1}", r.x + 6, r.y + 6, (180, 180, 200))
+                draw_text(screen, font, f"{i+1}", r.x + 6, r.y + 6, SOFT)
                 if plan[i] is not None:
                     draw_text(screen, big, plan[i].value, r.x + 22, r.y + 18, ACCENT)
 
@@ -481,20 +554,24 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 draw_text(screen, font, "Fill all 12 turns to start.", 520, 510, WARN)
 
             y = 560
-            draw_text(screen, font, "Rules: 3 Hearts | A=5/6 | B=2 | C=1 | I=Idle", 50, y)
-            draw_text(screen, font, "1.5s delay between turns | Press R to return to character select", 50, y + 24)
+            draw_text(screen, font, "Rules: 3 Hearts | A=5/6 | B=2 | C=1 | I=Idle", 50, y, SOFT)
+            draw_text(screen, font, "1.5s delay between turns | Press R to restart", 50, y + 24, SOFT)
 
         else:
+            p_color = CHAR_COLORS.get(player.character, TEXT)
+            c_color = CHAR_COLORS.get(cpu.character, TEXT)
+
             header = "Battle Playback" if mode == "battle" else "Battle Results"
             draw_text(screen, big, header, 50, 30, ACCENT)
-            draw_text(screen, font, "Scroll log: wheel over log / ↑↓ / PgUp PgDn / End. Press R to restart.", 50, 60, (180, 180, 200))
-            draw_text(screen, font, f"{player.name}: {character_label(player.character)}", 50, 80, (180, 180, 200))
-            draw_text(screen, font, f"{cpu.name}: {character_label(cpu.character)}", 420, 80, (180, 180, 200))
+            draw_text(screen, font, "Scroll log: wheel over log / ↑↓ / PgUp PgDn / End. Press R to restart.", 50, 60, SOFT)
+
+            # ✅ Colored labels
+            draw_text(screen, font, f"{player.name}: {character_label(player.character)}", 50, 80, p_color)
+            draw_text(screen, font, f"{cpu.name}: {character_label(cpu.character)}", 450, 80, c_color)
 
             # Turn card
             card = pygame.Rect(50, 90, 800, 150)
-            pygame.draw.rect(screen, PANEL, card, border_radius=12)
-            pygame.draw.rect(screen, (60, 60, 90), card, 2, border_radius=12)
+            draw_panel(screen, card)
 
             draw_text(screen, big, turn_title, 65, 110, TEXT)
 
@@ -511,8 +588,8 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 draw_text(screen, huge, f"Winner: {winner_text}", 50, 255, ACCENT)
                 draw_text(screen, big, f"Reason: {battle_reason}", 50, 310, TEXT)
 
-            pygame.draw.rect(screen, PANEL, log_panel, border_radius=12)
-            pygame.draw.rect(screen, (60, 60, 90), log_panel, 2, border_radius=12)
+            # Log panel
+            draw_panel(screen, log_panel)
 
             lines_per_page = (log_panel.height - 28) // 22
             max_s = max_scroll(lines_per_page)
@@ -534,7 +611,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                     f"Log: lines {start + 1}-{end} of {len(battle_log)} (scroll {log_scroll})",
                     log_panel.x + 14,
                     log_panel.bottom - 24,
-                    (180, 180, 200),
+                    SOFT,
                 )
 
         pygame.display.flip()
