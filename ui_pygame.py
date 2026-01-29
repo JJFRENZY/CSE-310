@@ -70,55 +70,6 @@ def draw_text(screen, font, msg, x, y, color=TEXT):
     screen.blit(surf, (x, y))
 
 
-def draw_text_segments(screen, font, segments, x, y):
-    """
-    Draw text as multiple colored segments.
-    segments: List[tuple[str, tuple[int,int,int]]]
-    """
-    cx = x
-    for text, color in segments:
-        if not text:
-            continue
-        surf = font.render(text, True, color)
-        screen.blit(surf, (cx, y))
-        cx += surf.get_width()
-
-
-def colorize_names_in_line(line: str, player_name: str, cpu_name: str, p_color, c_color):
-    """
-    Split a line into colored segments so player_name/cpu_name appear in their colors,
-    while everything else stays TEXT.
-    """
-    segments = []
-    i = 0
-    n = len(line)
-
-    while i < n:
-        p_idx = line.find(player_name, i) if player_name else -1
-        c_idx = line.find(cpu_name, i) if cpu_name else -1
-
-        candidates = [(p_idx, "p"), (c_idx, "c")]
-        candidates = [(idx, who) for idx, who in candidates if idx != -1]
-
-        if not candidates:
-            segments.append((line[i:], TEXT))
-            break
-
-        idx, who = min(candidates, key=lambda t: t[0])
-
-        if idx > i:
-            segments.append((line[i:idx], TEXT))
-
-        if who == "p":
-            segments.append((player_name, p_color))
-            i = idx + len(player_name)
-        else:
-            segments.append((cpu_name, c_color))
-            i = idx + len(cpu_name)
-
-    return segments
-
-
 def wrap_lines(text: str, limit: int = 54) -> List[str]:
     """Word wrap helper (tighter limit to prevent overflow)."""
     words = text.split()
@@ -331,8 +282,8 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
 
     btn_to_plan = pygame.Rect(600, 520, 250, 70)
 
-    # Log panel
-    log_panel = pygame.Rect(50, 360, 800, 260)
+    # ✅ Log panel moved DOWN so the winner/reason + bigger card don’t overlap it
+    log_panel = pygame.Rect(50, 395, 800, 230)
 
     def draw_button(rect: pygame.Rect, label: str, active: bool, enabled: bool):
         color = ACCENT if active else (90, 90, 120)
@@ -531,7 +482,6 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             draw_arrow_button(screen, btn_p_prev, "<", big, enabled=True)
             draw_arrow_button(screen, btn_p_next, ">", big, enabled=True)
 
-            # Character name centered between arrows
             name_area = pygame.Rect(
                 btn_p_prev.right + 10,
                 btn_p_prev.y,
@@ -548,7 +498,6 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             draw_panel(screen, info_panel)
             draw_text(screen, big, "What this color does:", info_panel.x + 20, info_panel.y + 15, TEXT)
 
-            # ✅ Clamp lines to the box height so nothing spills out
             info_text = CHAR_INFO.get(p_char, "")
             lines = wrap_lines(info_text, limit=54)
 
@@ -622,27 +571,29 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             draw_text(screen, big, header, 50, 30, ACCENT)
             draw_text(screen, font, "Scroll log: wheel over log / ↑↓ / PgUp PgDn / End. Press R to restart.", 50, 60, SOFT)
 
+            # ✅ These labels are now safe (card starts at y=120)
             draw_text(screen, font, f"{player.name}: {character_label(player.character)}", 50, 80, p_color)
             draw_text(screen, font, f"{cpu.name}: {character_label(cpu.character)}", 450, 80, c_color)
 
-            card = pygame.Rect(50, 90, 800, 150)
+            # ✅ Turn card moved DOWN and made taller
+            card = pygame.Rect(50, 120, 800, 170)
             draw_panel(screen, card)
 
-            # Turn title stays normal; log colors names
-            draw_text(screen, big, turn_title, 65, 110, TEXT)
+            draw_text(screen, big, turn_title, 65, card.y + 20, TEXT)
 
             wrapped = wrap_two_lines(turn_text, 78)
-            draw_text(screen, font, wrapped[0], 65, 150, TEXT)
+            draw_text(screen, font, wrapped[0], 65, card.y + 60, TEXT)
             if len(wrapped) > 1:
-                draw_text(screen, font, wrapped[1], 65, 170, TEXT)
+                draw_text(screen, font, wrapped[1], 65, card.y + 80, TEXT)
 
-            draw_text(screen, font, hearts_line, 65, 190, ACCENT)
-            draw_text(screen, font, pressure_line, 65, 215, ACCENT)
+            draw_text(screen, font, hearts_line, 65, card.y + 105, ACCENT)
+            draw_text(screen, font, pressure_line, 65, card.y + 130, ACCENT)
 
+            # ✅ Results moved down too (so it stays below the bigger card)
             if mode == "result":
                 winner_text = battle_winner if battle_winner is not None else "No winner"
-                draw_text(screen, huge, f"Winner: {winner_text}", 50, 255, ACCENT)
-                draw_text(screen, big, f"Reason: {battle_reason}", 50, 310, TEXT)
+                draw_text(screen, huge, f"Winner: {winner_text}", 50, 305, ACCENT)
+                draw_text(screen, big, f"Reason: {battle_reason}", 50, 360, TEXT)
 
             draw_panel(screen, log_panel)
 
@@ -656,9 +607,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
 
             y = log_panel.y + 14
             for line in view:
-                trimmed = line[:110]
-                segments = colorize_names_in_line(trimmed, player.name, cpu.name, p_color, c_color)
-                draw_text_segments(screen, font, segments, log_panel.x + 14, y)
+                draw_text(screen, font, line[:110], log_panel.x + 14, y, TEXT)
                 y += 22
 
             if len(battle_log) > lines_per_page:
