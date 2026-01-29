@@ -22,7 +22,7 @@ SLOT_GAP = 10
 
 # --- Character colors
 CHAR_COLORS = {
-    Character.NORMAL: (140, 140, 150),  # grey
+    Character.NORMAL: (140, 140, 150),  # grey/dark grey
 
     Character.RED_FIGHTER: (235, 90, 90),
     Character.BLUE_HIJUMP: (90, 150, 235),
@@ -70,7 +70,6 @@ def draw_text(screen, font, msg, x, y, color=TEXT):
 
 
 def wrap_lines(text: str, limit: int = 54) -> List[str]:
-    """Word wrap helper."""
     words = text.split()
     lines: List[str] = []
     current: List[str] = []
@@ -126,7 +125,6 @@ def draw_arrow_button(screen, rect: pygame.Rect, label: str, font, enabled=True)
 
 
 def draw_inline_segments(screen, font, segments: List[Tuple[str, tuple]], x: int, y: int):
-    """Draws text segments left-to-right, each with its own color."""
     cursor = x
     for text, color in segments:
         surf = font.render(text, True, color)
@@ -148,7 +146,6 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     big = pygame.font.SysFont(None, 40)
     huge = pygame.font.SysFont(None, 54)
 
-    # Available characters (player picks; CPU auto-picks)
     characters: List[Character] = [
         Character.NORMAL,
         Character.RED_FIGHTER,
@@ -284,7 +281,7 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     btn_idle = pygame.Rect(520, 360, 320, 50)
     btn_start = pygame.Rect(520, 430, 320, 60)
 
-    # Select screen layout (buttons NOT overlapping)
+    # Select screen layout
     select_panel_player = pygame.Rect(50, 140, 520, 120)
     btn_p_prev = pygame.Rect(select_panel_player.x + 20, select_panel_player.y + 55, 60, 50)
     btn_p_next = pygame.Rect(select_panel_player.right - 80, select_panel_player.y + 55, 60, 50)
@@ -292,9 +289,8 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
     info_panel = pygame.Rect(50, 280, 520, 170)
     btn_to_plan = pygame.Rect(600, 520, 250, 70)
 
-    # Battle layout — moved down so names never get covered
+    # Battle layout (card up top, log below)
     card = pygame.Rect(50, 120, 800, 160)
-    log_panel = pygame.Rect(50, 300, 800, 320)
 
     def draw_button(rect: pygame.Rect, label: str, active: bool, enabled: bool):
         color = ACCENT if active else (90, 90, 120)
@@ -390,24 +386,6 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 reset_to_select()
 
-            # Scroll log
-            if mode in ("battle", "result"):
-                if event.type == pygame.MOUSEWHEEL:
-                    mx, my = pygame.mouse.get_pos()
-                    if log_panel.collidepoint(mx, my):
-                        log_scroll += (-event.y) * 2
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_UP:
-                        log_scroll += 2
-                    elif event.key == pygame.K_DOWN:
-                        log_scroll -= 2
-                    elif event.key == pygame.K_PAGEUP:
-                        log_scroll += 10
-                    elif event.key == pygame.K_PAGEDOWN:
-                        log_scroll -= 10
-                    elif event.key == pygame.K_END:
-                        log_scroll = 0
-
             # Select clicks
             if mode == "select" and event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
@@ -445,6 +423,30 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                                     place_at(i, selected)
                             break
 
+            # Scroll log (battle/result)
+            if mode in ("battle", "result"):
+                # log panel is dynamic depending on mode, so compute it here for collision
+                if mode == "result":
+                    log_panel = pygame.Rect(50, 380, 800, 250)
+                else:
+                    log_panel = pygame.Rect(50, 300, 800, 320)
+
+                if event.type == pygame.MOUSEWHEEL:
+                    mx, my = pygame.mouse.get_pos()
+                    if log_panel.collidepoint(mx, my):
+                        log_scroll += (-event.y) * 2
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_UP:
+                        log_scroll += 2
+                    elif event.key == pygame.K_DOWN:
+                        log_scroll -= 2
+                    elif event.key == pygame.K_PAGEUP:
+                        log_scroll += 10
+                    elif event.key == pygame.K_PAGEDOWN:
+                        log_scroll -= 10
+                    elif event.key == pygame.K_END:
+                        log_scroll = 0
+
         # Battle playback
         if mode == "battle" and now_ms >= next_step_ms and battle_winner is None:
             if turn_index >= 12:
@@ -460,7 +462,6 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 hearts_line = f"Hearts: {player.name}={player.hearts} | {cpu.name}={cpu.hearts}"
                 pressure_line = f"Pressure: {player.name}={player.pressure} | {cpu.name}={cpu.pressure}"
 
-                # Store a special colored header line
                 battle_log.append(("TURN", out.turn_index, out.p_cmd, out.c_cmd))
                 battle_log.append(f"    {turn_text}")
                 battle_log.append(f"    {hearts_line}")
@@ -484,14 +485,12 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             draw_text(screen, huge, "Choose Your Character Color", 50, 60, ACCENT)
             draw_text(screen, font, "Press R anytime to restart. CPU picks its color automatically.", 50, 110, SOFT)
 
-            # Player selection panel
             draw_panel(screen, select_panel_player)
             draw_text(screen, big, "Player Character", select_panel_player.x + 20, select_panel_player.y + 15, TEXT)
 
             draw_arrow_button(screen, btn_p_prev, "<", big, enabled=True)
             draw_arrow_button(screen, btn_p_next, ">", big, enabled=True)
 
-            # Character name centered between arrows
             name_area = pygame.Rect(
                 btn_p_prev.right + 10,
                 btn_p_prev.y,
@@ -504,7 +503,6 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             label_y = name_area.y + (name_area.height - label_surf.get_height()) // 2
             screen.blit(label_surf, (label_x, label_y))
 
-            # Info panel (clamped)
             draw_panel(screen, info_panel)
             draw_text(screen, big, "What this color does:", info_panel.x + 20, info_panel.y + 15, TEXT)
 
@@ -524,18 +522,11 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 draw_text(screen, font, line, info_panel.x + 20, y, SOFT)
                 y += line_height
 
-            draw_text(
-                screen,
-                font,
-                "CPU: AUTO (it will pick a color at battle start based on yours).",
-                50,
-                info_panel.bottom + 10,
-                SOFT,
-            )
+            draw_text(screen, font, "CPU: AUTO (picks at battle start).", 50, info_panel.bottom + 10, SOFT)
 
             pygame.draw.rect(screen, (35, 35, 45), btn_to_plan, border_radius=14)
             pygame.draw.rect(screen, ACCENT, btn_to_plan, 2, border_radius=14)
-            draw_text(screen, huge, "PLAN", btn_to_plan.x + 70, btn_to_plan.y + 12, ACCENT)
+            draw_text(screen, huge, "PLAN", btn_to_plan.x + 60, btn_to_plan.y + 12, ACCENT)
 
         elif mode == "plan":
             p_char = characters[player_char_idx]
@@ -556,17 +547,10 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 if plan[i] is not None:
                     draw_text(screen, big, plan[i].value, r.x + 22, r.y + 18, ACCENT)
 
-            def draw_command_button(rect, label, active, enabled):
-                color = ACCENT if active else (90, 90, 120)
-                base = (30, 40, 45) if enabled else (25, 25, 30)
-                pygame.draw.rect(screen, base, rect, border_radius=10)
-                pygame.draw.rect(screen, color if enabled else (70, 70, 80), rect, 2, border_radius=10)
-                draw_text(screen, big, label, rect.x + 12, rect.y + 10, color if enabled else (140, 140, 150))
-
-            draw_command_button(btn_attack, f"Attack (A) — left: {remaining[Command.ATTACK]}", selected == Command.ATTACK, remaining[Command.ATTACK] > 0)
-            draw_command_button(btn_block, f"Block (B) — left: {remaining[Command.BLOCK]}", selected == Command.BLOCK, remaining[Command.BLOCK] > 0)
-            draw_command_button(btn_counter, f"Counter (C) — left: {remaining[Command.COUNTER]}", selected == Command.COUNTER, remaining[Command.COUNTER] > 0)
-            draw_command_button(btn_idle, "Idle (I) — no action", selected == Command.IDLE, True)
+            draw_button(btn_attack, f"Attack (A) — left: {remaining[Command.ATTACK]}", selected == Command.ATTACK, remaining[Command.ATTACK] > 0)
+            draw_button(btn_block, f"Block (B) — left: {remaining[Command.BLOCK]}", selected == Command.BLOCK, remaining[Command.BLOCK] > 0)
+            draw_button(btn_counter, f"Counter (C) — left: {remaining[Command.COUNTER]}", selected == Command.COUNTER, remaining[Command.COUNTER] > 0)
+            draw_button(btn_idle, "Idle (I) — no action", selected == Command.IDLE, True)
 
             all_filled = all(c is not None for c in plan)
             pygame.draw.rect(screen, (35, 35, 45), btn_start, border_radius=12)
@@ -576,11 +560,13 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             if not all_filled:
                 draw_text(screen, font, "Fill all 12 turns to start.", 520, 510, WARN)
 
-            y = 560
-            draw_text(screen, font, "Rules: 3 Hearts | A=5/6 | B=2 | C=1 | I=Idle", 50, y, SOFT)
-            draw_text(screen, font, "1.5s delay between turns | Press R to restart", 50, y + 24, SOFT)
-
         else:
+            # ✅ dynamic log panel so Winner/Reason never sits behind it
+            if mode == "result":
+                log_panel = pygame.Rect(50, 380, 800, 250)
+            else:
+                log_panel = pygame.Rect(50, 300, 800, 320)
+
             p_color = CHAR_COLORS.get(player.character, TEXT)
             c_color = CHAR_COLORS.get(cpu.character, TEXT)
 
@@ -588,49 +574,22 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
             draw_text(screen, big, header, 50, 30, ACCENT)
             draw_text(screen, font, "Scroll log: wheel over log / ↑↓ / PgUp PgDn / End. Press R to restart.", 50, 60, SOFT)
 
-            # Player / CPU labels (colored)
-            draw_inline_segments(
-                screen, font,
-                [(player.name, p_color), (f": {character_label(player.character)}", SOFT)],
-                50, 90
-            )
-            draw_inline_segments(
-                screen, font,
-                [(cpu.name, c_color), (f": {character_label(cpu.character)}", SOFT)],
-                450, 90
-            )
+            # ✅ Entire label is colored now (not just the name)
+            draw_text(screen, font, f"{player.name}: {character_label(player.character)}", 50, 90, p_color)
+            draw_text(screen, font, f"{cpu.name}: {character_label(cpu.character)}", 450, 90, c_color)
 
-            # Turn card (moved down so it never covers names)
             draw_panel(screen, card)
             draw_text(screen, big, turn_title, card.x + 15, card.y + 15, TEXT)
 
-            # Colored VS line inside card
-            # Example: Turn X: Jack[A] vs CPU[B]
-            if mode in ("battle", "result") and turn_title.startswith("Turn"):
-                draw_inline_segments(
-                    screen, font,
-                    [
-                        (player.name, p_color),
-                        ("[", TEXT),
-                        (player_plan[turn_index - 1].value if turn_index > 0 else "-", TEXT),
-                        ("] vs ", TEXT),
-                        (cpu.name, c_color),
-                        ("[", TEXT),
-                        (cpu_plan[turn_index - 1].value if turn_index > 0 else "-", TEXT),
-                        ("]", TEXT),
-                    ],
-                    card.x + 15,
-                    card.y + 55
-                )
-
             wrapped = wrap_two_lines(turn_text, 78)
-            draw_text(screen, font, wrapped[0], card.x + 15, card.y + 85, TEXT)
+            draw_text(screen, font, wrapped[0], card.x + 15, card.y + 70, TEXT)
             if len(wrapped) > 1:
-                draw_text(screen, font, wrapped[1], card.x + 15, card.y + 105, TEXT)
+                draw_text(screen, font, wrapped[1], card.x + 15, card.y + 92, TEXT)
 
-            draw_text(screen, font, hearts_line, card.x + 15, card.y + 130, ACCENT)
-            draw_text(screen, font, pressure_line, card.x + 15, card.y + 150, ACCENT)
+            draw_text(screen, font, hearts_line, card.x + 15, card.y + 120, ACCENT)
+            draw_text(screen, font, pressure_line, card.x + 15, card.y + 142, ACCENT)
 
+            # ✅ Winner/Reason now drawn ABOVE the result log panel area
             if mode == "result":
                 winner_text = battle_winner if battle_winner is not None else "No winner"
                 winner_color = ACCENT
@@ -639,10 +598,9 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 elif battle_winner == cpu.name:
                     winner_color = c_color
 
-                draw_text(screen, huge, f"Winner: {winner_text}", 50, 290, winner_color)
-                draw_text(screen, big, f"Reason: {battle_reason}", 50, 340, TEXT)
+                draw_text(screen, huge, f"Winner: {winner_text}", 50, 285, winner_color)
+                draw_text(screen, big, f"Reason: {battle_reason}", 50, 335, TEXT)
 
-            # Log panel (colored names inside TURN header lines)
             draw_panel(screen, log_panel)
 
             lines_per_page = (log_panel.height - 28) // 22
@@ -672,15 +630,5 @@ def run_game(player_name: str = "Player", cpu_name: str = "CPU") -> None:
                 else:
                     draw_text(screen, font, str(entry)[:110], log_panel.x + 14, y, TEXT)
                 y += 22
-
-            if len(battle_log) > lines_per_page:
-                draw_text(
-                    screen,
-                    font,
-                    f"Log: lines {start + 1}-{end} of {len(battle_log)} (scroll {log_scroll})",
-                    log_panel.x + 14,
-                    log_panel.bottom - 24,
-                    SOFT,
-                )
 
         pygame.display.flip()
